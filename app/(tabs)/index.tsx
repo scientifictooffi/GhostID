@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { StyleSheet, View, Text, TouchableOpacity, Alert, Platform } from "react-native";
+import { StyleSheet, View, Text, TouchableOpacity, Alert, Platform, ActivityIndicator } from "react-native";
 import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Scan, CheckCircle, XCircle, RefreshCw } from "lucide-react-native";
+import { Scan, CheckCircle, XCircle } from "lucide-react-native";
 import { useRouter } from "expo-router";
+import * as Haptics from 'expo-haptics';
 
 import Colors from "@/constants/colors";
 import { APP_NAME } from "@/constants/config";
 import { useProofStore } from "@/stores/proofStore";
+import { useWalletStore } from "@/stores/walletStore";
 
 export default function HomeScreen() {
   const [scanned, setScanned] = useState(false);
@@ -17,10 +19,16 @@ export default function HomeScreen() {
   const router = useRouter();
   
   const { generateAndSendProof, resetState, status } = useProofStore();
+  const { isInitialized, initializeWallet } = useWalletStore();
   const [permission, requestPermission] = useCameraPermissions();
 
   const handleBarCodeScanned = async ({ data }: { data: string }) => {
     if (scanned || processing) return;
+    
+    // Provide haptic feedback when QR code is scanned
+    if (Platform.OS !== 'web') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
     
     setScanned(true);
     setProcessing(true);
@@ -29,15 +37,36 @@ export default function HomeScreen() {
     try {
       console.log("QR Code scanned with data:", data);
       
-
+      // Check if wallet is initialized
+      if (!isInitialized) {
+        // Try to initialize the wallet automatically
+        try {
+          await initializeWallet();
+          console.log("Wallet initialized automatically");
+        } catch (walletError) {
+          throw new Error("Wallet not initialized. Please initialize your wallet in Settings first.");
+        }
+      }
+      
+      // Process the QR code data
       await generateAndSendProof(data);
       
-
+      // If we get here, it was successful
       setProcessing(false);
+      
+      // Provide success haptic feedback
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
     } catch (err: any) {
       console.error("Error processing QR code:", err);
       setError(err.message || "Failed to process QR code");
       setProcessing(false);
+      
+      // Provide error haptic feedback
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      }
     }
   };
 
@@ -47,6 +76,19 @@ export default function HomeScreen() {
     setError(null);
     resetState();
   };
+
+  useEffect(() => {
+    // Check if wallet is initialized on component mount
+    if (!isInitialized) {
+      Alert.alert(
+        "Wallet Not Initialized",
+        "Please initialize your wallet in Settings before scanning QR codes.",
+        [
+          { text: "OK", onPress: () => router.push("/settings") }
+        ]
+      );
+    }
+  }, [isInitialized]);
 
   if (!permission) {
     return (
@@ -85,6 +127,7 @@ export default function HomeScreen() {
             barcodeScannerSettings={{
               barcodeTypes: ["qr"],
             }}
+            facing="back"
           />
           <View style={styles.overlay}>
             <View style={styles.scanFrame} />
@@ -98,7 +141,7 @@ export default function HomeScreen() {
           {processing ? (
             <>
               <View style={styles.statusIcon}>
-                <RefreshCw size={80} color={Colors.light.primary} />
+                <ActivityIndicator size="large" color={Colors.light.primary} />
               </View>
               <Text style={styles.statusText}>Processing request...</Text>
               <Text style={styles.statusDetail}>
@@ -204,6 +247,8 @@ const styles = StyleSheet.create({
   },
   statusIcon: {
     marginBottom: 20,
+    height: 80,
+    justifyContent: "center",
   },
   statusText: {
     fontSize: 22,

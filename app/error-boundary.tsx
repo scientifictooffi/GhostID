@@ -11,7 +11,7 @@ interface State {
   error: Error | null;
 }
 
-const IFRAME_ID = 'web-preview';
+const IFRAME_ID = 'rork-web-preview';
 
 const webTargetOrigins = [
   "http://localhost:3000"

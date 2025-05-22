@@ -8,10 +8,8 @@ import { Platform } from "react-native";
 import { ErrorBoundary } from "./error-boundary";
 
 export const unstable_settings = {
-
   initialRouteName: "(tabs)",
 };
-
 
 SplashScreen.preventAutoHideAsync();
 

@@ -1,122 +1,36 @@
 import { Platform } from 'react-native';
-import { RPC_URL, STATE_CONTRACT_ADDRESS } from '@/constants/config';
+import { RPC_URL, STATE_CONTRACT_ADDRESS, REQUEST_TIMEOUT } from '@/constants/config';
+import { useWalletStore } from '@/stores/walletStore';
+import { generateZKProof, parseAuthorizationRequest as parseRequest } from './polygonId';
+import { AuthorizationRequestMessage, VerificationHandlerResponse } from '@/types/polygon-id';
 
-
-
-/**
- * Parse a DIDComm Authorization Request from a QR code
- * @param qrData The data from the scanned QR code
- * @returns Parsed authorization request
- */
-export const parseAuthorizationRequest = async (qrData: string) => {
-  console.log("Parsing authorization request:", qrData);
-  
-
-  if (!qrData || typeof qrData !== 'string') {
-    throw new Error("Invalid QR code format");
-  }
-  
-
-  try {
-    try {
-      const directJson = JSON.parse(qrData);
-      if (directJson && typeof directJson === 'object') {
-        
-        if (!directJson.callbackUrl) {
-          directJson.callbackUrl = "https://multiply-darling-walrus.ngrok-free.app";
-        }
-        return directJson;
-      }
-    } catch (e) {
-
-    }
-    
-    if (qrData.includes('c_i=')) {
-      const ciParam = qrData.split('c_i=')[1].split('&')[0];
-      // Decode the base64url encoded string
-      const decodedCi = decodeBase64Url(ciParam);
-      const authRequest = JSON.parse(decodedCi);
-      
-      if (!authRequest.callbackUrl) {
-        authRequest.callbackUrl = "https://multiply-darling-walrus.ngrok-free.app";
-      }
-      
-      return authRequest;
-    } else if (qrData.startsWith('didcomm://')) {
-
-      const uri = qrData.replace('didcomm://', '');
-      let decodedUri;
-      
-
-      try {
-        decodedUri = decodeBase64Url(uri);
-      } catch (e) {
-
-        decodedUri = decodeURIComponent(uri);
-      }
-      
-      const authRequest = JSON.parse(decodedUri);
-      
-
-      if (!authRequest.callbackUrl) {
-        authRequest.callbackUrl = "https://multiply-darling-walrus.ngrok-free.app";
-      }
-      
-      return authRequest;
-    } else {
-
-      console.log("Creating mock request for unrecognized format");
-      return {
-        id: `mock-${Date.now()}`,
-        type: "https://iden3-communication.io/authorization/1.0/request",
-        thid: `thread-${Date.now()}`,
-        from: "did:polygonid:polygon:mumbai:2qL5JeKcRQZGVxL1EXFmNRGBcoKNbrahMj4VQG123456",
-        to: "did:polygonid:polygon:mumbai:2qDyy1kEo2AYcP91PZm1Jb9Bk1NGM1uV9ygLXT123456",
-        body: {
-          reason: "Demo verification",
-          scope: [
-            {
-              id: 1,
-              type: "KYCAgeCredential",
-              circuitId: "credentialAtomicQueryMTP",
-              rules: {
-                age: { "$gte": 18 }
-              }
-            }
-          ]
-        },
-        callbackUrl: "https://multiply-darling-walrus.ngrok-free.app"
-      };
-    }
-  } catch (error) {
-    console.error("Failed to parse authorization request:", error);
-    throw new Error("Invalid authorization request format");
-  }
-};
+export const parseAuthorizationRequest = parseRequest;
 
 /**
  * Generate a ZKP response for an authorization request
  * @param authRequest The parsed authorization request
  * @returns The generated ZKP response
  */
-export const generateZKPResponse = async (authRequest: any) => {
+export const generateZKPResponse = async (authRequest: AuthorizationRequestMessage): Promise<VerificationHandlerResponse> => {
   console.log("Generating ZKP response for request:", authRequest);
   
-
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  
-
-  const mockResponse = {
-    id: `response-${Date.now()}`,
-    type: "https://iden3-communication.io/authorization/1.0/response",
-    thid: authRequest.thid || "thread-123",
-    body: {
-      message: "Proof generated successfully",
-      proofValue: "mock-proof-value-" + Math.random().toString(36).substring(2, 10)
+  try {
+    // Get the wallet from the store
+    const { isInitialized, identityDid } = useWalletStore.getState();
+    
+    if (!isInitialized || !identityDid) {
+      throw new Error("Wallet not initialized. Please initialize your wallet first.");
     }
-  };
-  
-  return mockResponse;
+    
+    // Generate the ZKP response using our polygonId service
+    const zkpResponse = await generateZKProof(authRequest);
+    
+    console.log("ZKP response generated successfully:", zkpResponse);
+    return zkpResponse;
+  } catch (error) {
+    console.error("Failed to generate ZKP response:", error);
+    throw error;
+  }
 };
 
 /**
@@ -125,23 +39,53 @@ export const generateZKPResponse = async (authRequest: any) => {
  * @param callbackUrl The URL to send the response to
  * @returns The result of the send operation
  */
-export const sendZKPResponse = async (response: any, callbackUrl: string) => {
+export const sendZKPResponse = async (response: VerificationHandlerResponse, callbackUrl: string) => {
   console.log("Sending ZKP response to:", callbackUrl);
   
   try {
-    const joseMessage = JSON.stringify(response);
+    // Convert the response to a string if it's not already
+    const responseData = typeof response === 'string' 
+      ? response 
+      : JSON.stringify(response);
     
-    console.log("Mock sending response to:", callbackUrl);
-    console.log("Response payload:", joseMessage);
+    // Create AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
     
-    await new Promise(resolve => setTimeout(resolve, 800));
+    // Send the response to the callback URL
+    const fetchResponse = await fetch(callbackUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: responseData,
+      signal: controller.signal
+    });
     
-    return {
-      status: "success",
-      message: "Proof accepted"
-    };
+    // Clear the timeout
+    clearTimeout(timeoutId);
+    
+    if (!fetchResponse.ok) {
+      throw new Error(`HTTP error! Status: ${fetchResponse.status}`);
+    }
+    
+    const responseJson = await fetchResponse.json();
+    console.log("ZKP response sent successfully:", responseJson);
+    
+    return responseJson;
   } catch (error) {
     console.error("Failed to send ZKP response:", error);
+    
+    // For network errors, provide a more specific message
+    if (error instanceof TypeError && error.message.includes('Network request failed')) {
+      throw new Error("Network error: Could not connect to the callback server. Please check your internet connection.");
+    }
+    
+    // For timeout errors
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${REQUEST_TIMEOUT/1000} seconds`);
+    }
+    
     throw error;
   }
 };
@@ -152,27 +96,14 @@ export const sendZKPResponse = async (response: any, callbackUrl: string) => {
  * @returns The result of the authorization flow
  */
 export const handleAuthorizationFlow = async (qrData: string) => {
-
+  // Parse the authorization request
   const authRequest = await parseAuthorizationRequest(qrData);
   
-
+  // Generate a ZKP response
   const zkpResponse = await generateZKPResponse(authRequest);
   
-
+  // Send the response to the callback URL
   const result = await sendZKPResponse(zkpResponse, authRequest.callbackUrl);
   
   return result;
-};
-
-
-const decodeBase64Url = (str: string) => {
-
-  const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  
-
-  if (Platform.OS === 'web') {
-    return atob(base64);
-  } else {
-    return Buffer.from(base64, 'base64').toString('utf-8');
-  }
 };
